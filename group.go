@@ -2,13 +2,27 @@ package statemachine
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"sync"
-
-	"github.com/filecoin-project/go-statestore"
-	"github.com/ipfs/go-datastore"
-	"golang.org/x/xerrors"
 )
+
+func ToKey(k interface{}) Key {
+	switch t := k.(type) {
+	case uint64:
+		return Key{fmt.Sprint(t)}
+	case fmt.Stringer:
+		return Key{t.String()}
+	case string:
+		return Key{t}
+	default:
+		panic("unexpected key type")
+	}
+}
+
+type Key struct {
+	string
+}
 
 type StateHandler interface {
 	// returns
@@ -22,7 +36,9 @@ type StateHandlerWithInit interface {
 
 // StateGroup manages a group of state machines sharing the same logic
 type StateGroup struct {
-	sts       *statestore.StateStore
+	logger Logger
+
+	sts       StateStore
 	hnd       StateHandler
 	stateType reflect.Type
 
@@ -30,17 +46,18 @@ type StateGroup struct {
 	initNotifier sync.Once
 
 	lk  sync.Mutex
-	sms map[datastore.Key]*StateMachine
+	sms map[Key]*StateMachine
 }
 
 // stateType: T - (MyStateStruct{})
-func New(ds datastore.Datastore, hnd StateHandler, stateType interface{}) *StateGroup {
+func New(logger Logger, sts StateStore, hnd StateHandler, stateType interface{}) *StateGroup {
 	return &StateGroup{
-		sts:       statestore.New(ds),
+		logger:    logger,
+		sts:       sts,
 		hnd:       hnd,
 		stateType: reflect.TypeOf(stateType),
 		closing:   make(chan struct{}),
-		sms:       map[datastore.Key]*StateMachine{},
+		sms:       map[Key]*StateMachine{},
 	}
 }
 
@@ -56,24 +73,24 @@ func (s *StateGroup) Begin(id interface{}, userState interface{}) error {
 	s.lk.Lock()
 	defer s.lk.Unlock()
 
-	sm, exist := s.sms[statestore.ToKey(id)]
+	sm, exist := s.sms[ToKey(id)]
 	if exist {
-		return xerrors.Errorf("Begin: already tracking identifier `%v`", id)
+		return fmt.Errorf("Begin: already tracking identifier `%v`", id)
 	}
 
 	exists, err := s.sts.Has(id)
 	if err != nil {
-		return xerrors.Errorf("failed to check if state for %v exists: %w", id, err)
+		return fmt.Errorf("failed to check if state for %v exists: %w", id, err)
 	}
 	if exists {
-		return xerrors.Errorf("Begin: cannot initiate a state for identifier `%v` that already exists", id)
+		return fmt.Errorf("Begin: cannot initiate a state for identifier `%v` that already exists", id)
 	}
 
 	sm, err = s.loadOrCreate(id, userState)
 	if err != nil {
-		return xerrors.Errorf("loadOrCreate state: %w", err)
+		return fmt.Errorf("loadOrCreate state: %w", err)
 	}
-	s.sms[statestore.ToKey(id)] = sm
+	s.sms[ToKey(id)] = sm
 	return nil
 }
 
@@ -86,14 +103,14 @@ func (s *StateGroup) Send(id interface{}, evt interface{}) (err error) {
 	s.lk.Lock()
 	defer s.lk.Unlock()
 
-	sm, exist := s.sms[statestore.ToKey(id)]
+	sm, exist := s.sms[ToKey(id)]
 	if !exist {
 		userState := reflect.New(s.stateType).Interface()
 		sm, err = s.loadOrCreate(id, userState)
 		if err != nil {
-			return xerrors.Errorf("loadOrCreate state: %w", err)
+			return fmt.Errorf("loadOrCreate state: %w", err)
 		}
-		s.sms[statestore.ToKey(id)] = sm
+		s.sms[ToKey(id)] = sm
 	}
 
 	return sm.send(Event{User: evt})
@@ -103,21 +120,23 @@ func (s *StateGroup) loadOrCreate(name interface{}, userState interface{}) (*Sta
 	s.initNotifier.Do(s.init)
 	exists, err := s.sts.Has(name)
 	if err != nil {
-		return nil, xerrors.Errorf("failed to check if state for %v exists: %w", name, err)
+		return nil, fmt.Errorf("failed to check if state for %v exists: %w", name, err)
 	}
 
 	if !exists {
 		if !reflect.TypeOf(userState).AssignableTo(reflect.PtrTo(s.stateType)) {
-			return nil, xerrors.Errorf("initialized item with incorrect type %s", reflect.TypeOf(userState).Name())
+			return nil, fmt.Errorf("initialized item with incorrect type %s", reflect.TypeOf(userState).Name())
 		}
 
 		err = s.sts.Begin(name, userState)
 		if err != nil {
-			return nil, xerrors.Errorf("saving initial state: %w", err)
+			return nil, fmt.Errorf("saving initial state: %w", err)
 		}
 	}
 
 	res := &StateMachine{
+		logger: s.logger,
+
 		planner:  s.hnd.Plan,
 		eventsIn: make(chan Event),
 
@@ -156,7 +175,7 @@ func (s *StateGroup) List(out interface{}) error {
 }
 
 // Get gets state for a single state machine
-func (s *StateGroup) Get(id interface{}) *statestore.StoredState {
+func (s *StateGroup) Get(id interface{}) StoredState {
 	return s.sts.Get(id)
 }
 

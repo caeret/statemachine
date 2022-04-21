@@ -2,18 +2,17 @@ package statemachine
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sync/atomic"
-
-	"github.com/filecoin-project/go-statestore"
-	xerrors "golang.org/x/xerrors"
-
-	logging "github.com/ipfs/go-log/v2"
 )
 
-var log = logging.Logger("evtsm")
+var ErrTerminated = errors.New("normal shutdown of state machine")
 
-var ErrTerminated = xerrors.New("normal shutdown of state machine")
+type Logger interface {
+	Debug(msg string, kvs ...interface{})
+	Error(msg string, kvs ...interface{})
+}
 
 type Event struct {
 	User interface{}
@@ -27,11 +26,13 @@ type Event struct {
 type Planner func(events []Event, user interface{}) (interface{}, uint64, error)
 
 type StateMachine struct {
+	logger Logger
+
 	planner  Planner
 	eventsIn chan Event
 
 	name      interface{}
-	st        *statestore.StoredState
+	st        StoredState
 	stateType reflect.Type
 
 	closing chan struct{}
@@ -53,7 +54,7 @@ func (fsm *StateMachine) run() {
 		select {
 		case evt := <-fsm.eventsIn:
 			pendingEvents = append(pendingEvents, evt)
-			log.Debugw("appended new pending evt", "len(pending)", len(pendingEvents))
+			fsm.logger.Debug("appended new pending evt", "len(pending)", len(pendingEvents))
 		case <-stageDone:
 			if len(pendingEvents) == 0 {
 				continue
@@ -69,7 +70,7 @@ func (fsm *StateMachine) run() {
 		}
 
 		if atomic.CompareAndSwapInt32(&fsm.busy, 0, 1) {
-			log.Debugw("sm run in critical zone", "len(pending)", len(pendingEvents))
+			fsm.logger.Debug("sm run in critical zone", "len(pending)", len(pendingEvents))
 
 			var nextStep interface{}
 			var ustate interface{}
@@ -79,7 +80,7 @@ func (fsm *StateMachine) run() {
 			err := fsm.mutateUser(func(user interface{}) (err error) {
 				nextStep, processed, err = fsm.planner(pendingEvents, user)
 				ustate = user
-				if xerrors.Is(err, ErrTerminated) {
+				if errors.Is(err, ErrTerminated) {
 					terminated = true
 					return nil
 				}
@@ -89,7 +90,7 @@ func (fsm *StateMachine) run() {
 				return
 			}
 			if err != nil {
-				log.Errorf("Executing event planner failed: %+v", err)
+				fsm.logger.Error("Executing event planner failed.", "error", err)
 				return
 			}
 
@@ -107,13 +108,13 @@ func (fsm *StateMachine) run() {
 			}
 
 			go func() {
-				defer log.Debugw("leaving critical zone and resetting atomic var to zero")
+				defer fsm.logger.Debug("leaving critical zone and resetting atomic var to zero.")
 
 				if nextStep != nil {
 					res := reflect.ValueOf(nextStep).Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(ustate).Elem()})
 
 					if res[0].Interface() != nil {
-						log.Errorf("executing step: %+v", res[0].Interface().(error)) // TODO: propagate top level
+						fsm.logger.Error("executing step.", "error", res[0].Interface().(error)) // TODO: propagate top level
 						return
 					}
 				}
