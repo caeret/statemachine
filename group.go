@@ -105,7 +105,7 @@ func (s *StateGroup) Send(id interface{}, evt interface{}) (err error) {
 
 	sm, exist := s.sms[ToKey(id)]
 	if !exist {
-		userState := reflect.New(s.stateType).Interface()
+		userState := reflect.New(s.stateType).Elem().Interface()
 		sm, err = s.loadOrCreate(id, userState)
 		if err != nil {
 			return fmt.Errorf("loadOrCreate state: %w", err)
@@ -124,11 +124,11 @@ func (s *StateGroup) loadOrCreate(name interface{}, userState interface{}) (*Sta
 	}
 
 	if !exists {
-		if !reflect.TypeOf(userState).AssignableTo(reflect.PtrTo(s.stateType)) {
+		if !reflect.TypeOf(userState).AssignableTo(s.stateType) {
 			return nil, fmt.Errorf("initialized item with incorrect type %s", reflect.TypeOf(userState).Name())
 		}
 
-		err = s.sts.Begin(name, userState)
+		err = s.sts.Set(name, userState)
 		if err != nil {
 			return nil, fmt.Errorf("saving initial state: %w", err)
 		}
@@ -140,8 +140,11 @@ func (s *StateGroup) loadOrCreate(name interface{}, userState interface{}) (*Sta
 		planner:  s.hnd.Plan,
 		eventsIn: make(chan Event),
 
-		name:      name,
-		st:        s.sts.Get(name),
+		name: name,
+		st: storedState{
+			key: name,
+			ss:  s.sts,
+		},
 		stateType: s.stateType,
 
 		closing: make(chan struct{}),
@@ -166,20 +169,4 @@ func (s *StateGroup) Stop(ctx context.Context) error {
 
 	close(s.closing)
 	return nil
-}
-
-// List outputs states of all state machines in this group
-// out: *[]StateT
-func (s *StateGroup) List(out interface{}) error {
-	return s.sts.List(out)
-}
-
-// Get gets state for a single state machine
-func (s *StateGroup) Get(id interface{}) StoredState {
-	return s.sts.Get(id)
-}
-
-// Has indicates whether there is data for the given state machine
-func (s *StateGroup) Has(id interface{}) (bool, error) {
-	return s.sts.Has(id)
 }

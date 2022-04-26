@@ -2,13 +2,19 @@ package statemachine
 
 type StateStore interface {
 	Has(key interface{}) (bool, error)
-	Begin(i interface{}, state interface{}) error
-	Get(key interface{}) StoredState
-	List(interface{}) error
+	Get(key interface{}) (interface{}, error)
+	Set(key interface{}, state interface{}) error
 }
 
-type StoredState interface {
-	End() error
-	Get(interface{}) error
-	Mutate(mutator interface{}) error
+type storedState struct {
+	key interface{}
+	ss  StateStore
+}
+
+func (s *storedState) Get() (interface{}, error) {
+	return s.ss.Get(s.key)
+}
+
+func (s *storedState) Set(state interface{}) error {
+	return s.ss.Set(s.key, state)
 }

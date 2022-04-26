@@ -3,6 +3,7 @@ package statemachine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync/atomic"
 )
@@ -32,7 +33,7 @@ type StateMachine struct {
 	eventsIn chan Event
 
 	name      interface{}
-	st        StoredState
+	st        storedState
 	stateType reflect.Type
 
 	closing chan struct{}
@@ -131,14 +132,25 @@ func (fsm *StateMachine) run() {
 }
 
 func (fsm *StateMachine) mutateUser(cb func(user interface{}) error) error {
-	mutt := reflect.FuncOf([]reflect.Type{reflect.PtrTo(fsm.stateType)}, []reflect.Type{reflect.TypeOf(new(error)).Elem()}, false)
+	user, err := fsm.st.Get()
+	if err != nil {
+		return err
+	}
 
-	mutf := reflect.MakeFunc(mutt, func(args []reflect.Value) (results []reflect.Value) {
-		err := cb(args[0].Interface())
-		return []reflect.Value{reflect.ValueOf(&err).Elem()}
-	})
+	userV := reflect.ValueOf(user)
+	if !userV.Type().AssignableTo(fsm.stateType) {
+		return fmt.Errorf("mutate item with incorrect type %T", user)
+	}
 
-	return fsm.st.Mutate(mutf.Interface())
+	state := reflect.New(userV.Type())
+	state.Elem().Set(userV)
+
+	err = cb(state.Interface())
+	if err != nil {
+		return err
+	}
+
+	return fsm.st.Set(state.Elem().Interface())
 }
 
 func (fsm *StateMachine) send(evt Event) error {
