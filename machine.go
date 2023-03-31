@@ -3,38 +3,32 @@ package statemachine
 import (
 	"context"
 	"errors"
-	"fmt"
-	"reflect"
 	"sync/atomic"
 )
 
 var ErrTerminated = errors.New("normal shutdown of state machine")
 
-type Logger interface {
-	Debug(msg string, kvs ...interface{})
-	Error(msg string, kvs ...interface{})
+type Event struct {
+	User any
 }
 
-type Event struct {
-	User interface{}
-}
+type NextStep[T any] func(ctx Context, st T) error
 
 // Planner processes in queue events
 // It returns:
 // 1. a handler of type -- func(ctx Context, st <T>) (func(*<T>), error), where <T> is the typeOf(User) param
 // 2. the number of events processed
 // 3. an error if occured
-type Planner func(events []Event, user interface{}) (interface{}, uint64, error)
+type Planner[T any] func(events []Event, user *T) (NextStep[T], uint64, error)
 
-type StateMachine struct {
+type StateMachine[K comparable, T any] struct {
 	logger Logger
 
-	planner  Planner
+	planner  Planner[T]
 	eventsIn chan Event
 
-	name      interface{}
-	st        storedState
-	stateType reflect.Type
+	name K
+	st   storedState[K, T]
 
 	closing chan struct{}
 	closed  chan struct{}
@@ -42,7 +36,7 @@ type StateMachine struct {
 	busy int32
 }
 
-func (fsm *StateMachine) run() {
+func (fsm *StateMachine[K, T]) run() {
 	defer close(fsm.closed)
 
 	var pendingEvents []Event
@@ -73,12 +67,12 @@ func (fsm *StateMachine) run() {
 		if atomic.CompareAndSwapInt32(&fsm.busy, 0, 1) {
 			fsm.logger.Debug("sm run in critical zone", "len(pending)", len(pendingEvents))
 
-			var nextStep interface{}
-			var ustate interface{}
+			var nextStep NextStep[T]
+			var ustate *T
 			var processed uint64
 			var terminated bool
 
-			err := fsm.mutateUser(func(user interface{}) (err error) {
+			err := fsm.mutateUser(func(user *T) (err error) {
 				nextStep, processed, err = fsm.planner(pendingEvents, user)
 				ustate = user
 				if errors.Is(err, ErrTerminated) {
@@ -103,7 +97,7 @@ func (fsm *StateMachine) run() {
 
 			ctx := Context{
 				ctx: context.TODO(),
-				send: func(evt interface{}) error {
+				send: func(evt any) error {
 					return fsm.send(Event{User: evt})
 				},
 			}
@@ -112,10 +106,9 @@ func (fsm *StateMachine) run() {
 				defer fsm.logger.Debug("leaving critical zone and resetting atomic var to zero.")
 
 				if nextStep != nil {
-					res := reflect.ValueOf(nextStep).Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(ustate).Elem()})
-
-					if res[0].Interface() != nil {
-						fsm.logger.Error("executing step.", "error", res[0].Interface().(error)) // TODO: propagate top level
+					err := nextStep(ctx, *ustate)
+					if err != nil {
+						fsm.logger.Error("executing step.", "error", err) // TODO: propagate top level
 						return
 					}
 				}
@@ -131,29 +124,21 @@ func (fsm *StateMachine) run() {
 	}
 }
 
-func (fsm *StateMachine) mutateUser(cb func(user interface{}) error) error {
+func (fsm *StateMachine[K, T]) mutateUser(cb func(user *T) error) error {
 	user, err := fsm.st.Get()
 	if err != nil {
 		return err
 	}
 
-	userV := reflect.ValueOf(user)
-	if !userV.Type().AssignableTo(fsm.stateType) {
-		return fmt.Errorf("mutate item with incorrect type %T", user)
-	}
-
-	state := reflect.New(userV.Type())
-	state.Elem().Set(userV)
-
-	err = cb(state.Interface())
+	err = cb(&user)
 	if err != nil {
 		return err
 	}
 
-	return fsm.st.Set(state.Elem().Interface())
+	return fsm.st.Set(user)
 }
 
-func (fsm *StateMachine) send(evt Event) error {
+func (fsm *StateMachine[K, T]) send(evt Event) error {
 	select {
 	case <-fsm.closed:
 		return ErrTerminated
@@ -162,7 +147,7 @@ func (fsm *StateMachine) send(evt Event) error {
 	}
 }
 
-func (fsm *StateMachine) stop(ctx context.Context) error {
+func (fsm *StateMachine[K, T]) stop(ctx context.Context) error {
 	close(fsm.closing)
 
 	select {

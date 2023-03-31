@@ -3,77 +3,55 @@ package statemachine
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"sync"
 )
 
-func ToKey(k interface{}) Key {
-	switch t := k.(type) {
-	case uint64:
-		return Key{fmt.Sprint(t)}
-	case fmt.Stringer:
-		return Key{t.String()}
-	case string:
-		return Key{t}
-	default:
-		panic("unexpected key type")
-	}
+type StateHandler[T any] interface {
+	Plan(events []Event, user *T) (NextStep[T], uint64, error)
 }
 
-type Key struct {
-	string
-}
-
-type StateHandler interface {
-	// returns
-	Plan(events []Event, user interface{}) (interface{}, uint64, error)
-}
-
-type StateHandlerWithInit interface {
-	StateHandler
+type StateHandlerWithInit[T any] interface {
+	StateHandler[T]
 	Init(<-chan struct{})
 }
 
 // StateGroup manages a group of state machines sharing the same logic
-type StateGroup struct {
+type StateGroup[K comparable, T any] struct {
 	logger Logger
 
-	sts       StateStore
-	hnd       StateHandler
-	stateType reflect.Type
+	sts StateStore[K, T]
+	hnd StateHandler[T]
 
 	closing      chan struct{}
 	initNotifier sync.Once
 
 	lk  sync.Mutex
-	sms map[Key]*StateMachine
+	sms map[K]*StateMachine[K, T]
 }
 
-// stateType: T - (MyStateStruct{})
-func New(logger Logger, sts StateStore, hnd StateHandler, stateType interface{}) *StateGroup {
-	return &StateGroup{
-		logger:    logger,
-		sts:       sts,
-		hnd:       hnd,
-		stateType: reflect.TypeOf(stateType),
-		closing:   make(chan struct{}),
-		sms:       map[Key]*StateMachine{},
+func New[K comparable, T any](logger Logger, sts StateStore[K, T], hnd StateHandler[T]) *StateGroup[K, T] {
+	return &StateGroup[K, T]{
+		logger:  logger,
+		sts:     sts,
+		hnd:     hnd,
+		closing: make(chan struct{}),
+		sms:     map[K]*StateMachine[K, T]{},
 	}
 }
 
-func (s *StateGroup) init() {
-	initter, ok := s.hnd.(StateHandlerWithInit)
+func (s *StateGroup[K, T]) init() {
+	initter, ok := s.hnd.(StateHandlerWithInit[T])
 	if ok {
 		initter.Init(s.closing)
 	}
 }
 
 // Begin initiates tracking with a specific value for a given identifier
-func (s *StateGroup) Begin(id interface{}, userState interface{}) error {
+func (s *StateGroup[K, T]) Begin(id K, userState T) error {
 	s.lk.Lock()
 	defer s.lk.Unlock()
 
-	sm, exist := s.sms[ToKey(id)]
+	sm, exist := s.sms[id]
 	if exist {
 		return fmt.Errorf("Begin: already tracking identifier `%v`", id)
 	}
@@ -90,7 +68,7 @@ func (s *StateGroup) Begin(id interface{}, userState interface{}) error {
 	if err != nil {
 		return fmt.Errorf("loadOrCreate state: %w", err)
 	}
-	s.sms[ToKey(id)] = sm
+	s.sms[id] = sm
 	return nil
 }
 
@@ -99,24 +77,24 @@ func (s *StateGroup) Begin(id interface{}, userState interface{}) error {
 //
 // If a state machine with the specified id doesn't exits, it's created, and it's
 // state is set to zero-value of stateType provided in group constructor
-func (s *StateGroup) Send(id interface{}, evt interface{}) (err error) {
+func (s *StateGroup[K, T]) Send(id K, evt any) (err error) {
 	s.lk.Lock()
 	defer s.lk.Unlock()
 
-	sm, exist := s.sms[ToKey(id)]
+	sm, exist := s.sms[id]
 	if !exist {
-		userState := reflect.New(s.stateType).Elem().Interface()
+		userState := *new(T)
 		sm, err = s.loadOrCreate(id, userState)
 		if err != nil {
 			return fmt.Errorf("loadOrCreate state: %w", err)
 		}
-		s.sms[ToKey(id)] = sm
+		s.sms[id] = sm
 	}
 
 	return sm.send(Event{User: evt})
 }
 
-func (s *StateGroup) loadOrCreate(name interface{}, userState interface{}) (*StateMachine, error) {
+func (s *StateGroup[K, T]) loadOrCreate(name K, userState T) (*StateMachine[K, T], error) {
 	s.initNotifier.Do(s.init)
 	exists, err := s.sts.Has(name)
 	if err != nil {
@@ -124,28 +102,23 @@ func (s *StateGroup) loadOrCreate(name interface{}, userState interface{}) (*Sta
 	}
 
 	if !exists {
-		if !reflect.TypeOf(userState).AssignableTo(s.stateType) {
-			return nil, fmt.Errorf("initialized item with incorrect type %s", reflect.TypeOf(userState).Name())
-		}
-
 		err = s.sts.Set(name, userState)
 		if err != nil {
 			return nil, fmt.Errorf("saving initial state: %w", err)
 		}
 	}
 
-	res := &StateMachine{
+	res := &StateMachine[K, T]{
 		logger: s.logger,
 
 		planner:  s.hnd.Plan,
 		eventsIn: make(chan Event),
 
 		name: name,
-		st: storedState{
+		st: storedState[K, T]{
 			key: name,
 			ss:  s.sts,
 		},
-		stateType: s.stateType,
 
 		closing: make(chan struct{}),
 		closed:  make(chan struct{}),
@@ -157,7 +130,7 @@ func (s *StateGroup) loadOrCreate(name interface{}, userState interface{}) (*Sta
 }
 
 // Stop stops all state machines in this group
-func (s *StateGroup) Stop(ctx context.Context) error {
+func (s *StateGroup[K, T]) Stop(ctx context.Context) error {
 	s.lk.Lock()
 	defer s.lk.Unlock()
 

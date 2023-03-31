@@ -1,20 +1,20 @@
 package statemachine
 
-type StateStore interface {
-	Has(key interface{}) (bool, error)
-	Get(key interface{}) (interface{}, error)
-	Set(key interface{}, state interface{}) error
+type StateStore[K comparable, T any] interface {
+	Has(key K) (bool, error)
+	Get(key K) (T, error)
+	Set(key K, state T) error
 }
 
-type storedState struct {
-	key interface{}
-	ss  StateStore
+type storedState[K comparable, T any] struct {
+	key K
+	ss  StateStore[K, T]
 }
 
-func (s *storedState) Get() (interface{}, error) {
+func (s *storedState[K, T]) Get() (T, error) {
 	return s.ss.Get(s.key)
 }
 
-func (s *storedState) Set(state interface{}) error {
+func (s *storedState[K, T]) Set(state T) error {
 	return s.ss.Set(s.key, state)
 }
