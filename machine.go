@@ -42,6 +42,10 @@ func (fsm *StateMachine[K, T]) run() {
 	var pendingEvents []Event
 
 	stageDone := make(chan struct{})
+
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+
 	for {
 		// NOTE: This requires at least one event to be sent to trigger a stage
 		//  This means that after restarting the state machine users of this
@@ -96,7 +100,7 @@ func (fsm *StateMachine[K, T]) run() {
 			}
 
 			ctx := Context{
-				ctx: context.TODO(),
+				Context: ctx,
 				send: func(evt any) error {
 					return fsm.send(Event{User: evt})
 				},

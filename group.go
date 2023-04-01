@@ -83,7 +83,7 @@ func (s *StateGroup[K, T]) Send(id K, evt any) (err error) {
 
 	sm, exist := s.sms[id]
 	if !exist {
-		userState := *new(T)
+		var userState T
 		sm, err = s.loadOrCreate(id, userState)
 		if err != nil {
 			return fmt.Errorf("loadOrCreate state: %w", err)
