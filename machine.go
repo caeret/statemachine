@@ -76,7 +76,7 @@ func (fsm *StateMachine[K, T]) run() {
 			var processed uint64
 			var terminated bool
 
-			err := fsm.mutateUser(func(user *T) (err error) {
+			err := fsm.mutateUser(ctx, func(user *T) (err error) {
 				nextStep, processed, err = fsm.planner(pendingEvents, user)
 				ustate = user
 				if errors.Is(err, ErrTerminated) {
@@ -128,8 +128,8 @@ func (fsm *StateMachine[K, T]) run() {
 	}
 }
 
-func (fsm *StateMachine[K, T]) mutateUser(cb func(user *T) error) error {
-	user, err := fsm.st.Get()
+func (fsm *StateMachine[K, T]) mutateUser(ctx context.Context, cb func(user *T) error) error {
+	user, err := fsm.st.Get(ctx)
 	if err != nil {
 		return err
 	}
@@ -139,7 +139,7 @@ func (fsm *StateMachine[K, T]) mutateUser(cb func(user *T) error) error {
 		return err
 	}
 
-	return fsm.st.Set(user)
+	return fsm.st.Set(ctx, user)
 }
 
 func (fsm *StateMachine[K, T]) send(evt Event) error {

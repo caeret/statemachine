@@ -47,7 +47,7 @@ func (s *StateGroup[K, T]) init() {
 }
 
 // Begin initiates tracking with a specific value for a given identifier
-func (s *StateGroup[K, T]) Begin(id K, userState T) error {
+func (s *StateGroup[K, T]) Begin(ctx context.Context, id K, userState T) error {
 	s.lk.Lock()
 	defer s.lk.Unlock()
 
@@ -56,15 +56,15 @@ func (s *StateGroup[K, T]) Begin(id K, userState T) error {
 		return fmt.Errorf("Begin: already tracking identifier `%v`", id)
 	}
 
-	exists, err := s.sts.Has(id)
+	exists, err := s.sts.Has(ctx, id)
 	if err != nil {
 		return fmt.Errorf("failed to check if state for %v exists: %w", id, err)
 	}
 	if exists {
-		return fmt.Errorf("Begin: cannot initiate a state for identifier `%v` that already exists", id)
+		return fmt.Errorf("begin: cannot initiate a state for identifier `%v` that already exists", id)
 	}
 
-	sm, err = s.loadOrCreate(id, userState)
+	sm, err = s.loadOrCreate(ctx, id, userState)
 	if err != nil {
 		return fmt.Errorf("loadOrCreate state: %w", err)
 	}
@@ -77,14 +77,14 @@ func (s *StateGroup[K, T]) Begin(id K, userState T) error {
 //
 // If a state machine with the specified id doesn't exits, it's created, and it's
 // state is set to zero-value of stateType provided in group constructor
-func (s *StateGroup[K, T]) Send(id K, evt any) (err error) {
+func (s *StateGroup[K, T]) Send(ctx context.Context, id K, evt any) (err error) {
 	s.lk.Lock()
 	defer s.lk.Unlock()
 
 	sm, exist := s.sms[id]
 	if !exist {
 		var userState T
-		sm, err = s.loadOrCreate(id, userState)
+		sm, err = s.loadOrCreate(ctx, id, userState)
 		if err != nil {
 			return fmt.Errorf("loadOrCreate state: %w", err)
 		}
@@ -94,15 +94,15 @@ func (s *StateGroup[K, T]) Send(id K, evt any) (err error) {
 	return sm.send(Event{User: evt})
 }
 
-func (s *StateGroup[K, T]) loadOrCreate(name K, userState T) (*StateMachine[K, T], error) {
+func (s *StateGroup[K, T]) loadOrCreate(ctx context.Context, name K, userState T) (*StateMachine[K, T], error) {
 	s.initNotifier.Do(s.init)
-	exists, err := s.sts.Has(name)
+	exists, err := s.sts.Has(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check if state for %v exists: %w", name, err)
 	}
 
 	if !exists {
-		err = s.sts.Set(name, userState)
+		err = s.sts.Set(ctx, name, userState)
 		if err != nil {
 			return nil, fmt.Errorf("saving initial state: %w", err)
 		}

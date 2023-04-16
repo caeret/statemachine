@@ -1,9 +1,11 @@
 package statemachine
 
+import "context"
+
 type StateStore[K comparable, T any] interface {
-	Has(key K) (bool, error)
-	Get(key K) (T, error)
-	Set(key K, state T) error
+	Has(ctx context.Context, key K) (bool, error)
+	Get(ctx context.Context, key K) (T, error)
+	Set(ctx context.Context, key K, state T) error
 }
 
 type storedState[K comparable, T any] struct {
@@ -11,10 +13,10 @@ type storedState[K comparable, T any] struct {
 	ss  StateStore[K, T]
 }
 
-func (s *storedState[K, T]) Get() (T, error) {
-	return s.ss.Get(s.key)
+func (s *storedState[K, T]) Get(ctx context.Context) (T, error) {
+	return s.ss.Get(ctx, s.key)
 }
 
-func (s *storedState[K, T]) Set(state T) error {
-	return s.ss.Set(s.key, state)
+func (s *storedState[K, T]) Set(ctx context.Context, state T) error {
+	return s.ss.Set(ctx, s.key, state)
 }
